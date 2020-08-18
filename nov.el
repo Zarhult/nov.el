@@ -1,9 +1,11 @@
 ;;; nov.el --- Featureful EPUB reader mode
 
-;; Copyright (C) 2017-2019 Vasilij Schneidermann <mail@vasilij.de>
+;; Copyright (C) 2017 Vasilij Schneidermann <mail@vasilij.de>
 
 ;; Author: Vasilij Schneidermann <mail@vasilij.de>
-;; URL: https://github.com/wasamasa/nov.el
+;; URL: https://depp.brause.cc/nov.el
+;; Package-Version: 20200813.821
+;; Package-Commit: 6cfd80124038504038bcb5d4cf2e8b037c36841a
 ;; Version: 0.3.0
 ;; Package-Requires: ((dash "2.12.0") (esxml "0.3.3") (emacs "24.4"))
 ;; Keywords: hypermedia, multimedia, epub
@@ -439,30 +441,30 @@ Each alist item consists of the identifier and full path."
   (setq url (url-generic-parse-url url))
   (mapcar 'nov-urldecode (list (url-filename url) (url-target url))))
 
+;; adapted from `shr-rescale-image'
 (defun nov-insert-image (path alt)
   "Insert an image for PATH at point, falling back to ALT.
 This function honors `shr-max-image-proportion' if possible."
-  (cond
-   ((not (display-graphic-p))
-    (insert alt))
-   ;; TODO: add native resizing support once it's official
-   ((fboundp 'imagemagick-types)
-    ;; adapted from `shr-rescale-image'
-    (-let [(x1 y1 x2 y2) (window-inside-pixel-edges
-                          (get-buffer-window (current-buffer)))]
-      (insert-image
-       (create-image path 'imagemagick nil
-                     :ascent 100
-                     :max-width (truncate (* shr-max-image-proportion
-                                             (- x2 x1)))
-                     :max-height (truncate (* shr-max-image-proportion
-                                              (- y2 y1)))))))
-   (t
-    ;; `create-image' errors out for unsupported image types
-    (let ((image (ignore-errors (create-image path nil nil :ascent 100))))
-      (if image
-          (insert-image image)
-        (insert alt))))))
+  (let ((type (if (or (and (fboundp 'image-transforms-p) (image-transforms-p))
+                      (not (fboundp 'imagemagick-types)))
+                  nil
+                'imagemagick)))
+    (if (not (display-graphic-p))
+        (insert alt)
+      (-let* (((x1 y1 x2 y2) (window-inside-pixel-edges
+                              (get-buffer-window (current-buffer))))
+              (image
+               ;; `create-image' errors out for unsupported image types
+               (ignore-errors
+                 (create-image path type nil
+                               :ascent 100
+                               :max-width (truncate (* shr-max-image-proportion
+                                                       (- x2 x1)))
+                               :max-height (truncate (* shr-max-image-proportion
+                                                        (- y2 y1)))))))
+        (if image
+            (insert-image image)
+          (insert alt))))))
 
 (defvar nov-original-shr-tag-img-function
   (symbol-function 'shr-tag-img))
@@ -494,12 +496,21 @@ chapter title."
       (setq title '(:propertize "No title" face italic)))
     (setq header-line-format (list title ": " chapter-title))))
 
+(defun nov-render-rt (dom)
+  "Custom <rt> rendering function for DOM.
+Inserts the contents of <rt> in to the buffer surrounded by parentheses."
+  (insert "(")
+  (insert (dom-text dom))
+  (insert ")"))
+
 (defvar nov-shr-rendering-functions
   '(;; default function uses url-retrieve and fails on local images
     (img . nov-render-img)
     ;; titles are rendered *inside* the document by default
-    (title . nov-render-title))
-  "Alist of rendering functions used with `shr-render-region'.")
+    (title . nov-render-title)
+    ;; display rt tags (furigana, etc) in parentheses
+    (rt . nov-render-rt)
+   "Alist of rendering functions used with `shr-render-region'."))
 
 (defun nov-render-html ()
   "Render HTML in current buffer with shr."
@@ -646,17 +657,18 @@ the HTML is rendered with `nov-render-html-function'."
 
 (defun nov-visit-relative-file (filename target)
   "Visit the document as specified by FILENAME and TARGET."
-  (when (not (zerop (length filename)))
-    (let* ((current-path (cdr (aref nov-documents nov-documents-index)))
-           (directory (file-name-directory current-path))
-           (path (file-truename (nov-make-path directory filename)))
-           (index (nov-find-document
-                   (lambda (doc) (equal path (file-truename (cdr doc)))))))
-      (when (not index)
-        (error "Couldn't locate document"))
-      (setq nov-documents-index index)))
-  (let ((shr-target-id target))
-    (nov-goto-document nov-documents-index))
+  (let (index)
+    (when (not (zerop (length filename)))
+      (let* ((current-path (cdr (aref nov-documents nov-documents-index)))
+             (directory (file-name-directory current-path))
+             (path (file-truename (nov-make-path directory filename)))
+             (match (nov-find-document
+                     (lambda (doc) (equal path (file-truename (cdr doc)))))))
+        (when (not match)
+          (error "Couldn't locate document"))
+        (setq index match)))
+    (let ((shr-target-id target))
+      (nov-goto-document (or index nov-documents-index))))
   (when target
     (let ((pos (next-single-property-change (point-min) 'shr-target-id)))
       (when (not pos)
@@ -728,7 +740,8 @@ Saving is only done if `nov-save-place-file' is set."
     (nov-goto-document index)
     (setq nov-history (cdr nov-history))
     (setq nov-history-forward history-forward)
-    (goto-char opoint)))
+    (goto-char opoint)
+    (recenter (1- (max 1 scroll-margin)))))
 
 (defun nov-history-forward ()
   "Go forward in the history of visited documents."
@@ -739,7 +752,8 @@ Saving is only done if `nov-save-place-file' is set."
          ((index opoint) (car nov-history-forward)))
     (nov-goto-document index)
     (setq nov-history-forward history-forward)
-    (goto-char opoint)))
+    (goto-char opoint)
+    (recenter (1- (max 1 scroll-margin)))))
 
 ;;;###autoload
 (define-derived-mode nov-mode special-mode "EPUB"
