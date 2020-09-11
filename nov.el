@@ -500,7 +500,7 @@ chapter title."
   "Custom <rt> rendering function for DOM.
 Inserts the contents of <rt> in to the buffer surrounded by parentheses."
   (insert "(")
-  (insert (dom-text dom))
+  (insert (dom-texts dom))
   (insert ")"))
 
 (defvar nov-shr-rendering-functions
